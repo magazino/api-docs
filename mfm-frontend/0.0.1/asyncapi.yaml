@@ -1,0 +1,313 @@
+asyncapi: 2.5.0
+info:
+  title: MFM Frontend
+  version: 0.0.1
+  description: |
+    This document describes a extension to the VDA5050 v2.0 by Magazino. It
+    defines additional topics that are used by the Magazino Fleet Manager (MFM).
+
+    The document is written from the perspective of the MFM:
+
+    * `PUBLISH` operations define messages published by the robot.
+    * `SUBSCRIBE` operations define messages produced by MFM, which the robot
+      subscribes to.
+
+    ## Streaming of live Laser data
+
+    Live laser data can be requested by the frontend to assert that a robot is
+    correctly localized or handover stations are correctly modelled.
+
+    The topics are going to be used in the Live View of MFM and during modelling
+    of handover stations in the Environment Editor (EE).
+
+    Actors:
+
+    * A browser running MFM frontend or the Environment Editor (**"User"**)
+    * A Magazino SOTO robot that is able to publish laser data (**"robot"**)
+
+    Requirements:
+
+    1. The robot advertises its available laser locations on
+    `uagv/v2/magazino/soto-0012/lasers`.
+    2. The User requests laser data from the robot by publishing, e.g.
+    `uagv/v2/magazino/soto-0012/lasers/start`.
+
+      * The user must publish a new message every 10 seconds while it is
+      interested in the data (heartbeat messages).
+
+    3. The robot publishes laser data as long as it is requested on the
+    requested data subtopics, e.g.
+    `uagv/v2/magazino/soto-0012/lasers/data/bottom`. After receiving a new
+    message it continues to publish for another 30 seconds (timeout interval).
+
+      * The robot keeps track of the different laserPositions that are
+      requested. e.g. Client A is interested in `[top, bottom]` and client B is
+      interested in `[bottom]`. Then the robot considers the heartbeat messages
+      of both clients for publishing the data of the top laser scanner, and the
+      heartbeat of client B for the bottom laser scanners.
+  contact:
+    name: Lars Lütjens
+    email: luetjens@magazino.eu
+    url: https://www.magazino.eu
+  license:
+    name: proprietary
+servers:
+  user:
+    url: https://{customer}-{site}-manager.magazino.cloud/
+    protocol: MQTT on websocket
+    description: |
+      MQTT broker for a specific customer instance.
+
+      This endpoint should be used by browsers (users), and is secured by
+      Identity-Aware Proxy (IAP) and (optionally) user/password authentication.
+
+      Please read [How to connect to SOTO fleet manager in the
+      cloud](https://magazino.atlassian.net/wiki/spaces/SD/pages/3938845240) for
+      details on how to connect to the broker.
+    variables:
+      customer:
+        description: Customer name
+      site:
+        description: Identifier of the location, plant, or site of the customer
+    bindings:
+      mqtt:
+        keepAlive: 60
+    security:
+      - iap: []
+      - userPassword: []
+defaultContentType: application/json
+channels:
+  uagv/v2/magazino/{serialNumber}/lasers:
+    description: |
+      Topic on which the robot advertises the available laserLocations, e.g.
+      bottom and top lasers. Each laser location is an aggregation of multiple
+      sensors at this location, e.g. the bottom laser location aggregates three
+      different Lidar sensors on a SOTO robot.
+    parameters:
+      serialNumber:
+        $ref: '#/components/parameters/serialNumber'
+    publish:
+      summary: Laser data published by the robot as long as it's requested
+      operationId: onLaserAdvertisement
+      message:
+        $ref: '#/components/messages/laserAdvertisement'
+      bindings:
+        mqtt:
+          qos: 1
+          retain: true
+  uagv/v2/magazino/{serialNumber}/lasers/start:
+    description: |
+      Request topic for the User to request laser publishing from a robot.
+      Requests are for a specific robot on a specific laser location. The robot
+      publishes as long as it receives heartbeat messages. It stops, if no
+      message is received within the timeout interval.
+    parameters:
+      serialNumber:
+        $ref: '#/components/parameters/serialNumber'
+    subscribe:
+      summary: Request robot to start publishing laser data.
+      operationId: sendLaserRequest
+      message:
+        $ref: '#/components/messages/laserRequestMessage'
+      bindings:
+        mqtt:
+          qos: 0
+          retain: false
+  uagv/v2/magazino/{serialNumber}/lasers/data/{laserLocation}:
+    description: |
+      Topic that the robot uses to publish laser data, as long as the data is
+      requested. Bottom and top lasers are published on the respective
+      subtopics.
+
+      Messages are throttled, but users should expect messages to arrive with at
+      least 1 Hz.
+    parameters:
+      serialNumber:
+        $ref: '#/components/parameters/serialNumber'
+      laserLocation:
+        $ref: '#/components/parameters/laserLocation'
+    publish:
+      summary: Laser data published by the robot as long as it's requested
+      operationId: onLaserMessage
+      message:
+        $ref: '#/components/messages/laserData'
+      bindings:
+        mqtt:
+          qos: 0
+          retain: false
+components:
+  messages:
+    laserAdvertisement:
+      name: laserAdvertisement
+      title: Message to advertise available laser locations
+      payload:
+        $schema: http://json-schema.org/draft-07/schema#
+        $id: magazinoLaserAdvertisement.schema.json
+        title: laserAdvertisement
+        description: Message to advertise available laser locations.
+        type: object
+        required:
+          - timestamp
+          - laserLocations
+        properties:
+          timestamp:
+            type: string
+            format: date-time
+            description: Timestamp when this message was published.
+            examples:
+              - '1991-03-11T11:40:03.12Z'
+          laserLocations:
+            description: Array of supported laser locations of the robot
+            type: array
+            items:
+              type: string
+              enum:
+                - top
+                - bottom
+      examples:
+        - name: advertiseBothLaserLocations
+          summary: |
+            Example of a robot advertising both top and bottom laser scanners.
+          payload:
+            timestamp: '2023-04-26T09:18:20Z'
+            laserLocations:
+              - bottom
+              - top
+    laserData:
+      name: laserData
+      title: Stream of laser data
+      payload:
+        $schema: http://json-schema.org/draft-07/schema#
+        $id: magazinoLaserData.schema.json
+        title: laserData
+        description: >-
+          Message representing a laser point cloud at a specific point in time.
+          Array values can be zipped. x and y coordinates are mandatory; z
+          values are optional.
+        type: object
+        required:
+          - x
+          - 'y'
+        properties:
+          x:
+            description: List of x-coordinates, one for each point in space.
+            type: array
+            items:
+              type: number
+              format: float
+          'y':
+            description: List of y-coordinates, one for each point in space.
+            type: array
+            items:
+              type: number
+              format: float
+          z:
+            description: List of z-coordinates, one for each point in space.
+            type: array
+            items:
+              type: number
+              format: float
+      examples:
+        - name: bottomLaserScanData
+          summary: |
+            Example of one bottom laser scan reading with x and y values. z
+            values are omitted.
+          payload:
+            x:
+              - -8.292448997497559
+              - -8.25539493560791
+              - -8.218429565429688
+            'y':
+              - 5.002348899841309
+              - 5.006131172180176
+              - 5.005261421203613
+    laserRequestMessage:
+      name: laserRequestMessage
+      title: Heartbeat message to request robot to publishing laser data
+      payload:
+        $schema: http://json-schema.org/draft-07/schema#
+        $id: magazinoLaserRequestResponse.schema.json
+        title: laserRequestResponse
+        description: Message to request a robot to start streaming live laser data.
+        type: object
+        required:
+          - timestamp
+          - laserLocations
+          - clientId
+        properties:
+          timestamp:
+            type: string
+            format: date-time
+            description: Timestamp when this message was published.
+            examples:
+              - '1991-03-11T11:40:03.12Z'
+          laserLocations:
+            description: Which laser locations to request
+            type: array
+            items:
+              type: string
+              enum:
+                - top
+                - bottom
+          clientId:
+            description: >-
+              Identifier of the client that requests the laser data. Must be
+              included for debug purposes. Can be a uuid or a human-readable
+              value.
+            type: string
+      examples:
+        - name: requestBottomLaserScan
+          summary: |
+            Example of a request message when MFM requests to stream the
+            aggregated data of the bottom laser scanners.
+          payload:
+            timestamp: '2023-04-26T09:18:20Z'
+            laserLocations:
+              - bottom
+            clientId: bb2b8ad5-0072-436d-a4a7-022f0730c6d0
+  parameters:
+    serialNumber:
+      description: The serial number of the robot.
+      schema:
+        type: string
+    clientId:
+      description: Randomly generated, unique identifier of the client
+      schema:
+        type: string
+        format: uuid4
+    laserLocation:
+      description: |
+        For robots with a top laser scanner, laser data is aggregated for
+        different locations.
+      schema:
+        type: string
+        enum:
+          - bottom
+          - top
+  securitySchemes:
+    iap:
+      type: userPassword
+      description: |
+        Identity-Aware Proxy (IAP) using Magazino credentials in combination
+        with optional User/Password (see below) to connect to the broker.
+    userPassword:
+      type: userPassword
+      description: |
+        Optional.
+        Depending on the instance, x509 or IAP might be combined with
+        User/Password authentication to connect to the broker.  The broker uses
+        the username for rights-management.
+  messageTraits:
+    commonHeaders:
+      headers:
+        type: object
+        properties:
+          my-app-header:
+            type: integer
+            minimum: 0
+            maximum: 100
+  operationTraits:
+    mqtt:
+      bindings:
+        mqtt:
+          qos: 1

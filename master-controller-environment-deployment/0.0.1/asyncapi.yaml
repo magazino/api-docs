@@ -1,0 +1,515 @@
+asyncapi: 2.5.0
+info:
+  title: Master Controller Environment Deployment
+  version: 0.0.1
+  description: >
+    This extension to the VDA5050 describes how environments can be deployed
+
+    from the Magazino Fleet Manager (MFM) via a VDA5050 master controller (MC)
+
+    to a fleet of robots.
+
+
+    The document is written from the perspective of the master controller which
+
+    is implemented by a Magazino Partner or Integrator.
+
+
+    * `PUBLISH` operations define the messages consumed by the master controller
+      from the channel.
+    * `SUBSCRIBE` operations define the messages produced by the master
+    controller
+      and sent to the channel.
+
+    The two-phase deployment consists of:
+
+
+    #### 0. Mapping
+
+
+    Before deploying an environment, a map is created with the robot. Upon
+
+    completed mapping, the robot uploads the map to MFM. Interested parties can
+
+    monitor the progress of the map upload by subscribing to the `map/upload`
+
+    subtopic.
+
+
+    #### I. MFM deploys environment to MC
+
+      1. MFM publishes a new desired deploymentId on `deploy` subtopic
+      2. MC had subscribed to `deploy` and receives a call to upgrade. It
+      fetches the environment files via the Environment Deployment REST API, and
+      upgrades. It publishes the state on the `environment` subtopic.
+
+    #### II. MC deploys environment to each robot in the fleet. For each robot:
+
+      1. MC asserts that robot has no orders.
+      2. MC publishes desired environment state on `deploy`, where
+      `serialNumber` equals the robot's name.
+      3. The robot had subscribed, upgrades, and reports on the state on the
+      `environment` subtopic, where `serialNumber` equals the robot's name.
+
+    The user monitors the progress via the MFM, by subscribing to all
+
+    `environment` subtopics.
+
+
+    All messages are sent with `QoS 2`, and `retained=True` unless stated
+
+    differently.
+  contact:
+    name: Lars Lütjens
+    email: luetjens@magazino.eu
+    url: https://www.magazino.eu
+  license:
+    name: proprietary
+servers:
+  user:
+    url: https://{customer}-fleet-manager.magazino.eu/
+    protocol: MQTT on websocket
+    description: |
+      MQTT broker for a specific customer instance.
+
+      This endpoint should be used by browsers (users), and is secured by
+      Identity-Aware Proxy (IAP) and (optionally) user/password authentication.
+
+      Please read [How to connect to SOTO fleet manager in the
+      cloud](https://magazino.atlassian.net/wiki/spaces/SD/pages/3938845240) for
+      details on how to connect to the broker.
+    variables:
+      customer:
+        description: Customer name
+        default: test
+    bindings:
+      mqtt:
+        clientId: master
+        lastWill:
+          topic: master/v2/magazino/master/connection
+          qos: 2
+          message: See last will documentation of VDA5050
+          retain: true
+        keepAlive: 60
+    security:
+      - http: []
+      - userPassword: []
+  robots:
+    url: https://<customer>-fleet-manager-client.magazino.eu/
+    protocol: MQTT on websocket
+    description: |
+      MQTT broker for a specific customer instance.
+
+      This endpoint should be used by robots and developers, and is secured by
+      client certificates and (optionally) user/password authentication.
+
+      Please read [How to connect to SOTO fleet manager in the
+      cloud](https://magazino.atlassian.net/wiki/spaces/SD/pages/3938845240) for
+      details on how to connect to the broker.
+    variables:
+      customer:
+        description: Customer name
+        default: test
+    bindings:
+      mqtt:
+        clientId: master
+        lastWill:
+          topic: master/v2/magazino/master/connection
+          qos: 2
+          message: See last will documentation of VDA5050
+          retain: true
+        keepAlive: 60
+    security:
+      - x509: []
+      - userPassword: []
+defaultContentType: application/json
+channels:
+  uagv/v2/magazino/{serialNumber}/map/upload:
+    description: |
+      Topic, published by the robot during map upload. MFM uses the topic to
+      display the progress to the user.
+
+      * Published by a robot.
+      * Wildcard subscription by MFM.
+    parameters:
+      serialNumber:
+        $ref: '#/components/parameters/serialNumber'
+    publish:
+      summary: |
+        Robot publishes a message during map upload, and when map upload is
+        completed.
+      description: |
+        - Note that this topic is not retained.
+        - Only published during map upload.
+        - Messages are throttled to 1 Hz.
+        - Please have a look at the message examples.
+      operationId: onRobotMapUploadMessage
+      tags:
+        - name: Mapping
+        - name: Robot
+      message:
+        $ref: '#/components/messages/robotMapUploadMessage'
+      bindings:
+        mqtt:
+          qos: 1
+          retain: false
+  master/v2/magazino/{master}/deploy:
+    description: |
+      Topic that MFM uses to advertise the desired environment version. The
+      Master controller subscribes to the topic, updates its own environment,
+      and consecutively updates the robots of the fleet.
+    parameters:
+      master:
+        $ref: '#/components/parameters/master'
+    publish:
+      summary: Published once by MFM, then retained.
+      operationId: onMasterDeploymentRequest
+      tags:
+        - name: Deployment
+        - name: Master Control
+      message:
+        $ref: '#/components/messages/masterDeploymentRequest'
+      bindings:
+        mqtt:
+          qos: 2
+          retain: true
+  master/v2/magazino/{master}/environment:
+    description: |
+      New topic on which the master controller publishes its currently deployed
+      environment version.
+    parameters:
+      master:
+        $ref: '#/components/parameters/master'
+    subscribe:
+      summary: |
+        MC must publish after receiving a request to deploy a new environment,
+        and on every `DeploymentState` change.
+      operationId: sendMasterEnvironmentMessage
+      tags:
+        - name: Deployment
+        - name: Master Control
+      message:
+        $ref: '#/components/messages/masterEnvironmentMessage'
+      bindings:
+        mqtt:
+          qos: 2
+          retain: true
+  uagv/v2/magazino/{serialNumber}/deploy:
+    description: |
+      New topic to tell the robot to upgrade the environment.
+
+      * Published by the master control (MC)
+      * Each robot in the fleet subscribes to its own subtopic.
+    parameters:
+      serialNumber:
+        $ref: '#/components/parameters/serialNumber'
+    subscribe:
+      summary: |
+        MC advertises a new desired deployment version for a robot, after
+        receiving a `masterDeploymentRequest` and successfully completing it.
+      operationId: requestRobotDeployment
+      tags:
+        - name: Deployment
+        - name: Robot
+      message:
+        $ref: '#/components/messages/robotDeploymentRequest'
+      bindings:
+        mqtt:
+          qos: 2
+          retain: true
+  uagv/v2/magazino/{serialNumber}/environment:
+    description: |
+      New topic to tell the MFM or MC the version of the currently deployed
+      environment and its `DeploymentState`.
+
+      * Published by each robot.
+      * Wildcard subscription by the master controller.
+      * Wildcard subscription by MFM.
+    parameters:
+      serialNumber:
+        $ref: '#/components/parameters/serialNumber'
+    publish:
+      summary: |
+        Robot publishes after receiving a request to deploy a new environment,
+        and on every `DeploymentState` change.
+      operationId: onRobotEnvironmentMessage
+      tags:
+        - name: Deployment
+        - name: Robot
+      message:
+        $ref: '#/components/messages/robotEnvironmentMessage'
+      bindings:
+        mqtt:
+          qos: 2
+          retain: true
+components:
+  messages:
+    robotMapUploadMessage:
+      name: robotMapUploadMessage
+      title: Status of map upload of robot
+      summary: |
+        Message publishing the status of map upload by the robot.
+      payload:
+        $ref: '#/components/schemas/uploadState'
+      examples:
+        - name: finishedMapUploadMessage
+          summary: |
+            Example of a message after a successfully completed upload.
+          payload:
+            name: mylocalizationmap1
+            timestamp: '2023-01-19T00:00:00Z'
+            status: finished
+            retryCount: 0
+            totalBytes: 532501
+            bytesTransferred: 532501
+    masterDeploymentRequest:
+      name: masterDeploymentRequest
+      title: Request MC environment deployment
+      summary: |
+        Message requesting master controller to upgrade to environment to
+        desired deployment_id.
+      payload:
+        $ref: '#/components/schemas/deploy'
+    masterEnvironmentMessage:
+      name: masterEnvironmentMessage
+      title: Information about deployed environment of MC
+      summary: |
+        Message describing the master controller's environment deployment.
+      payload:
+        $ref: '#/components/schemas/environment'
+    robotDeploymentRequest:
+      name: robotDeploymentRequest
+      title: Request robot environment deployment
+      summary: |
+        Message requesting robot to upgrade to environment to desired
+        deployment_id.
+      payload:
+        $ref: '#/components/schemas/deploy'
+    robotEnvironmentMessage:
+      name: robotEnvironmentMessage
+      title: Status of deployed environment of robot
+      summary: |
+        Message describing the robot's environment deployment.
+      payload:
+        $ref: '#/components/schemas/environment'
+  schemas:
+    uploadState:
+      $schema: http://json-schema.org/draft-07/schema#
+      $id: magazinoUploadState.schema.json
+      title: uploadState
+      description: >-
+        Proprietary message that robot publishes while uploading blobs to the
+        Magazino Fleet Manager, e.g. a map.
+      type: object
+      required:
+        - name
+        - timestamp
+        - status
+        - retryCount
+        - totalBytes
+        - bytesTransferred
+      properties:
+        name:
+          description: Unique name of upload blob
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+          description: >-
+            Timestamp of publishing this message in ISO8601 format
+            (YYYY-MM-DDTHH:mm:ss.ssZ).
+          examples:
+            - '1991-03-11T11:40:03.12Z'
+        status:
+          title: uploadStatus
+          type: string
+          description: >-
+            Status of the upload. Valid states are:
+
+
+            - `running`: Blob is currently being uploaded.
+
+            - `finished` : There is currently no blob upload in progress, or
+            blob was successfully uploaded.
+
+
+            There is no failed state, since the upload is retried until it
+            succeeds.
+          enum:
+            - running
+            - finished
+        retryCount:
+          type: integer
+          description: Number of failed attempts of current blob upload.
+        totalBytes:
+          type: integer
+          description: File size of current upload in bytes
+        bytesTransferred:
+          type: integer
+          description: >-
+            Number of bytes already uploaded. Upload progress is defined as
+            `uploadStatus == 'running' => bytesTransferred / totalBytes`.
+        errorDescription:
+          type: string
+          description: If upload is failing, error message of last failed attempt.
+    deploy:
+      $schema: http://json-schema.org/draft-07/schema#
+      $id: magazinoDeploy.schema.json
+      title: deploy
+      description: >-
+        Proprietary message to request a robot or master controller to upgrade
+        its environment.
+      type: object
+      required:
+        - deploymentId
+      properties:
+        deploymentId:
+          type: string
+          format: uuid4
+          description: Unique identifier of the deployment.
+    environment:
+      $schema: http://json-schema.org/draft-07/schema#
+      $id: magazinoEnvironmentState.schema.json
+      title: environmentState
+      description: >-
+        Proprietary message that robots and master controller use to publish
+        their currently deployed, and desired environment version and state.
+      type: object
+      required:
+        - timestamp
+        - serialNumber
+        - status
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: >-
+            Timestamp when this environment state message was published in
+            ISO8601 format.
+          examples:
+            - '1991-03-11T11:40:03.12Z'
+        current:
+          description: >-
+            Information about deployed environment. Can be omitted, if the robot
+            does not have any deployed environment.
+          title: Deployment
+          required:
+            - timestamp
+            - deploymentId
+            - projectId
+            - projectName
+            - projectVersion
+            - mapDescription
+          type: object
+          properties:
+            timestamp:
+              type: string
+              format: date-time
+              description: >-
+                Timestamp of the last update to this deployment in ISO8601
+                format.
+              examples:
+                - '1991-03-11T11:40:03.12Z'
+            deploymentId:
+              type: string
+              format: uuid4
+              description: Unique identifier of the deployment.
+            projectId:
+              type: string
+              format: uuid4
+              description: Unique identifier of the project.
+            projectName:
+              type: string
+              description: Human-readable name of the project.
+            projectVersion:
+              type: string
+              description: >-
+                Project version in the format <major>.<minor>.<patch>. The
+                version is bumped by one minor on every save.
+              pattern: \d+\.\d+\.\d+
+            mapDescription:
+              type: string
+              description: Name of the localization map
+        desired:
+          description: >-
+            Information about desired environment deployment. If
+            current.deploymentId == desired.deploymentId, the deployment
+            succeeded. Can be omitted, if the robot does not have a deployed
+            environment.
+          $ref: '#/components/schemas/environment/properties/current'
+        serialNumber:
+          type: string
+          description: Serial number of the AGV.
+        status:
+          title: deploymentStatus
+          type: string
+          description: >-
+            Status of the deployment process, valid statuses are:
+
+
+            - `no_environment`: No environment is deployed. current and desired
+            are null.
+
+            - `running`: Environment is being deployed. current != desired.
+
+            - `finished`: Environment was successfully deployed. current ==
+            desired.
+
+            - `failed`: Environment deployment failed. current != desired.
+          enum:
+            - no_environment
+            - running
+            - finished
+            - failed
+        result:
+          type: string
+          description: >-
+            Human-readable result description, whether deployment
+            failed/succeeded. Use together with statuses {"finished", "failed"}.
+  parameters:
+    serialNumber:
+      description: The serial number of the robot.
+      schema:
+        type: string
+    master:
+      description: |
+        Unique identifier of the master controller. Usually unique, and set to
+        the constant `"master"`. In multi-floor projects, there might be more
+        than one master controller.
+      schema:
+        type: string
+        enum:
+          - master
+  securitySchemes:
+    x509:
+      type: X509
+      description: |
+        Use client certificates (X509) in combination with User/Password to
+        connect to the broker.
+    http:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Use Identity-Aware Proxy (IAP) in combination with (optional)
+        User/Password to connect to the broker.
+    userPassword:
+      type: userPassword
+      description: |
+        x509 or IAP must be combined with User/Password authentication to
+        connect to the broker.  The broker uses the username for
+        rights-management.
+  messageTraits:
+    commonHeaders:
+      headers:
+        type: object
+        properties:
+          my-app-header:
+            type: integer
+            minimum: 0
+            maximum: 100
+  operationTraits:
+    mqtt:
+      bindings:
+        mqtt:
+          qos: 1
