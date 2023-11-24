@@ -1,0 +1,549 @@
+asyncapi: 2.5.0
+info:
+  title: MFM Node-RED
+  version: 0.0.1
+  description: >
+    Definition of additional topics that MFM uses to communicate with Magazino's
+
+    master controller implemented in Node-RED (MC).
+
+
+    The document is written from the perspective of the master controller:
+
+
+    * `PUBLISH` operations define the messages consumed by the master controller
+      from the channel.
+    * `SUBSCRIBE` operations define the messages produced by the master
+    controller
+      and sent to the channel.
+  contact:
+    name: Lars Lütjens
+    email: luetjens@magazino.eu
+    url: https://www.magazino.eu
+  license:
+    name: proprietary
+servers:
+  user:
+    url: https://{customer}-fleet-manager.magazino.eu/
+    protocol: MQTT on websocket
+    description: |
+      MQTT broker for a specific customer instance.
+
+      This endpoint should be used by browsers (users), and is secured by
+      Identity-Aware Proxy (IAP) and (optionally) user/password authentication.
+
+      Please read [How to connect to SOTO fleet manager in the
+      cloud](https://magazino.atlassian.net/wiki/spaces/SD/pages/3938845240) for
+      details on how to connect to the broker.
+    variables:
+      customer:
+        description: Customer name
+        default: test
+    bindings:
+      mqtt:
+        clientId: master
+        lastWill:
+          topic: master/v2/magazino/master/connection
+          qos: 2
+          message: See last will documentation of VDA5050
+          retain: true
+        keepAlive: 60
+    security:
+      - http: []
+      - userPassword: []
+  robots:
+    url: https://<customer>-fleet-manager-client.magazino.eu/
+    protocol: MQTT on websocket
+    description: |
+      MQTT broker for a specific customer instance.
+
+      This endpoint should be used by robots and developers, and is secured by
+      client certificates and (optionally) user/password authentication.
+
+      Please read [How to connect to SOTO fleet manager in the
+      cloud](https://magazino.atlassian.net/wiki/spaces/SD/pages/3938845240) for
+      details on how to connect to the broker.
+    variables:
+      customer:
+        description: Customer name
+        default: test
+    bindings:
+      mqtt:
+        clientId: master
+        lastWill:
+          topic: master/v2/magazino/master/connection
+          qos: 2
+          message: See last will documentation of VDA5050
+          retain: true
+        keepAlive: 60
+    security:
+      - x509: []
+      - userPassword: []
+defaultContentType: application/json
+channels:
+  master/v2/magazino/{master}/connection:
+    description: |
+      Connection topic of the master controller, which is used to detect the
+      disconnection of the master controller.  See VDA5050 chapter on the
+      connection topic.
+    parameters:
+      master:
+        $ref: '#/components/parameters/master'
+    subscribe:
+      summary: Connection message from the master controller.
+      operationId: onConnectionMessage
+      message:
+        $ref: '#/components/messages/connectionMessage'
+      bindings:
+        mqtt:
+          qos: 1
+          retain: true
+  master/v2/magazino/{master}/deploy:
+    description: |
+      Topic that MFM uses to advertise the desired environment version. The
+      Master controller subscribes to the topic, updates its own environment,
+      and consecutively updates the robots of the fleet.
+    parameters:
+      master:
+        $ref: '#/components/parameters/master'
+    publish:
+      summary: Published once by MFM, then retained.
+      operationId: onMasterDeploymentRequest
+      tags:
+        - name: Deployment
+        - name: Master Control
+      message:
+        $ref: '#/components/messages/masterDeploymentRequest'
+      bindings:
+        mqtt:
+          qos: 2
+          retain: true
+  master/v2/magazino/{master}/environment:
+    description: |
+      New topic on which the master controller publishes its currently deployed
+      environment version.
+    parameters:
+      master:
+        $ref: '#/components/parameters/master'
+    subscribe:
+      summary: |
+        MC must publish after receiving a request to deploy a new environment,
+        and on every `DeploymentState` change.
+      operationId: sendMasterEnvironmentMessage
+      tags:
+        - name: Deployment
+        - name: Master Control
+      message:
+        $ref: '#/components/messages/masterEnvironmentMessage'
+      bindings:
+        mqtt:
+          qos: 2
+          retain: true
+  master/v2/magazino/{master}/controlLevels:
+    description: |
+      Topic on which the master controller advertises the current control level
+      for each robot.
+    parameters:
+      master:
+        $ref: '#/components/parameters/master'
+    subscribe:
+      summary: |
+        Published when a robot's control level changes, either triggered by a
+        user or service change.
+      operationId: sendControlLevels
+      message:
+        $ref: '#/components/messages/controlLevelsMessage'
+      bindings:
+        mqtt:
+          qos: 1
+          retain: true
+  master/v2/magazino/{master}/requests/unterminated:
+    description: |
+      All unterminated requests that the fleet of robots is currently working
+      on, or are created in the Magazino system.
+    parameters:
+      master:
+        $ref: '#/components/parameters/master'
+    subscribe:
+      summary: |
+        Published when a request is created, or updated. Contains a list of all
+        unterminated requests.
+      operationId: sendUnterminatedRequests
+      message:
+        $ref: '#/components/messages/unterminatedRequestsMessage'
+      bindings:
+        mqtt:
+          qos: 0
+          retain: true
+components:
+  messages:
+    connectionMessage:
+      name: connectionMessage
+      title: Connection from the robot
+      payload:
+        $schema: http://json-schema.org/draft-07/schema#
+        $id: connection.schema.json
+        title: connection
+        description: >-
+          The last will message of the AGV. Has to be sent with retain flag.
+
+          Once the AGV comes online, it has to send this message on its connect
+          topic, with the connectionState enum set to "ONLINE".
+           The last will message is to be configured with the connection state set to "CONNECTIONBROKEN".
+          Thus, if the AGV disconnects from the broker, master control gets
+          notified via the topic "connection".
+
+          If the AGV is disconnecting in an orderly fashion (e.g. shutting down,
+          sleeping), the AGV is to publish a message on this topic with the
+          connectionState set to "DISCONNECTED".
+        subtopic: /connection
+        type: object
+        required:
+          - headerId
+          - timestamp
+          - version
+          - manufacturer
+          - serialNumber
+          - connectionState
+        properties:
+          headerId:
+            type: integer
+            description: >-
+              headerId of the message. The headerId is defined per topic and
+              incremented by 1 with each sent (but not necessarily received)
+              message.
+            minimum: 0
+          timestamp:
+            type: string
+            format: date-time
+            description: Timestamp in ISO8601 format (YYYY-MM-DDTHH:mm:ss.ssZ).
+            examples:
+              - '1991-03-11T11:40:03.12Z'
+          version:
+            type: string
+            description: Version of the protocol [Major].[Minor].[Patch]
+            examples:
+              - 2.0.0
+          manufacturer:
+            type: string
+            description: Manufacturer of the AGV.
+            examples:
+              - Magazino
+          serialNumber:
+            type: string
+            description: Serial number of the AGV.
+            examples:
+              - soto-0012
+              - soto-7001
+          connectionState:
+            type: string
+            enum:
+              - ONLINE
+              - OFFLINE
+              - CONNECTIONBROKEN
+            description: >-
+              ONLINE: connection between AGV and broker is active. OFFLINE:
+              connection between AGV and broker has gone offline in a
+              coordinated way. CONNECTIONBROKEN: The connection between AGV and
+              broker has unexpectedly ended.
+    masterDeploymentRequest:
+      name: masterDeploymentRequest
+      title: Request MC environment deployment
+      summary: |
+        Message requesting master controller to upgrade to environment to
+        desired deployment_id.
+      payload:
+        $ref: '#/components/schemas/deploy'
+    masterEnvironmentMessage:
+      name: masterEnvironmentMessage
+      title: Information about deployed environment of MC
+      summary: |
+        Message describing the master controller's environment deployment.
+      payload:
+        $ref: '#/components/schemas/environment'
+    controlLevelsMessage:
+      name: controlLevelsMessage
+      title: Message containing current control level for all robots
+      payload:
+        $schema: http://json-schema.org/draft-07/schema#
+        $id: magazinoControlLevels.schema.json
+        title: controlLevels
+        description: A mapping from robot serial number to current control level [int].
+        type: object
+        additionalProperties:
+          type: integer
+          enum:
+            - 0
+            - 1
+            - 4
+            - 5
+            - 7
+            - 8
+            - 10
+        examples:
+          - soto-0012: 10
+            soto-0011: 5
+    unterminatedRequestsMessage:
+      name: unterminatedRequestsMessage
+      title: Message containing all unterminated requests in the system
+      payload:
+        $schema: http://json-schema.org/draft-07/schema#
+        $id: magazinoTransportRequests.schema.json
+        title: magazinoTransportRequests
+        description: List of transport requests.
+        definitions:
+          Container:
+            description: >-
+              Any place that can contain items (can be a pick-up or drop-off
+              station).
+            properties:
+              name:
+                title: Name
+                type: string
+                example: HandoverStation-1-1-1
+              station_name:
+                title: Station Name
+                type: string
+                example: HandoverStation-1
+            required:
+              - name
+            title: Container
+            type: object
+          CustomFields:
+            description: >-
+              A key value storage for additional parameters. (e.g. is_announced
+              to announce orders). Keys must be strings. Values can be strings,
+              numbers, booleans or nested Custom Fields.
+            title: Custom Fields
+            type: object
+          Item:
+            description: Item to be moved by an AGV.
+            properties:
+              item_id:
+                description: Unique identifier of the item (can be the barcode).
+                title: Item Id
+                type: string
+              length:
+                description: Length in meter (m). Has to be greater than width.
+                minimum: 0.3
+                title: Length
+                type: number
+              width:
+                description: Width in meter (m). Has to be smaller than length.
+                minimum: 0.2
+                title: Width
+                type: number
+              height:
+                description: Height in meter (m).
+                minimum: 0.08
+                title: Height
+                type: number
+            required:
+              - item_id
+              - height
+              - length
+              - width
+            title: Item
+            type: object
+        type: array
+        items:
+          type: object
+          title: RequestStatus
+          description: Describes the status of a transport request.
+          properties:
+            order_id:
+              title: Order id
+              type: string
+              description: Unique identifier of the order
+              example: ORDER_01
+            request_id:
+              description: Unique identifier of a Request.
+              title: Request Id
+              type: string
+              example: REQUEST_01
+            state:
+              type: string
+            item:
+              $ref: >-
+                #/components/messages/unterminatedRequestsMessage/payload/definitions/Item
+              description: Item to move from source to target.
+              title: Item
+              example: KLT-001
+            source:
+              $ref: >-
+                #/components/messages/unterminatedRequestsMessage/payload/definitions/Container
+              description: Container where an AGV can find the item to move.
+            target:
+              $ref: >-
+                #/components/messages/unterminatedRequestsMessage/payload/definitions/Container
+              description: Container where an AGV has to place the item picked from source.
+            created_at:
+              type: string
+              title: Created at
+              description: Timestamp of creation
+            terminated_at:
+              type: string
+              title: Terminated at
+              description: Timestamp of termination or null
+            custom_fields:
+              $ref: >-
+                #/components/messages/unterminatedRequestsMessage/payload/definitions/CustomFields
+            is_cancelable:
+              type: boolean
+              title: Is cancelable
+              description: Whether the request can still be cancelled.
+          required:
+            - order_id
+            - request_id
+            - state
+            - item
+            - source
+            - target
+            - created_at
+            - terminated_at
+            - custom_fields
+            - is_cancelable
+  schemas:
+    deploy:
+      $schema: http://json-schema.org/draft-07/schema#
+      $id: magazinoDeploy.schema.json
+      title: deploy
+      description: >-
+        Proprietary message to request a robot or master controller to upgrade
+        its environment.
+      type: object
+      required:
+        - deploymentId
+      properties:
+        deploymentId:
+          type: string
+          format: uuid4
+          description: Unique identifier of the deployment.
+    environment:
+      $schema: http://json-schema.org/draft-07/schema#
+      $id: magazinoEnvironmentState.schema.json
+      title: environmentState
+      description: >-
+        Proprietary message that robots and master controller use to publish
+        their currently deployed, and desired environment version and state.
+      type: object
+      required:
+        - timestamp
+        - serialNumber
+        - status
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: >-
+            Timestamp when this environment state message was published in
+            ISO8601 format.
+          examples:
+            - '1991-03-11T11:40:03.12Z'
+        current:
+          description: >-
+            Information about deployed environment. Can be omitted, if the robot
+            does not have any deployed environment.
+          title: Deployment
+          required:
+            - timestamp
+            - deploymentId
+            - projectId
+            - projectName
+            - projectVersion
+            - mapDescription
+          type: object
+          properties:
+            timestamp:
+              type: string
+              format: date-time
+              description: >-
+                Timestamp of the last update to this deployment in ISO8601
+                format.
+              examples:
+                - '1991-03-11T11:40:03.12Z'
+            deploymentId:
+              type: string
+              format: uuid4
+              description: Unique identifier of the deployment.
+            projectId:
+              type: string
+              format: uuid4
+              description: Unique identifier of the project.
+            projectName:
+              type: string
+              description: Human-readable name of the project.
+            projectVersion:
+              type: string
+              description: >-
+                Project version in the format <major>.<minor>.<patch>. The
+                version is bumped by one minor on every save.
+              pattern: \d+\.\d+\.\d+
+            mapDescription:
+              type: string
+              description: Name of the localization map
+        desired:
+          description: >-
+            Information about desired environment deployment. If
+            current.deploymentId == desired.deploymentId, the deployment
+            succeeded. Can be omitted, if the robot does not have a deployed
+            environment.
+          $ref: '#/components/schemas/environment/properties/current'
+        serialNumber:
+          type: string
+          description: Serial number of the AGV.
+        status:
+          title: deploymentStatus
+          type: string
+          description: >-
+            Status of the deployment process, valid statuses are:
+
+
+            - `no_environment`: No environment is deployed. current and desired
+            are null.
+
+            - `running`: Environment is being deployed. current != desired.
+
+            - `finished`: Environment was successfully deployed. current ==
+            desired.
+
+            - `failed`: Environment deployment failed. current != desired.
+          enum:
+            - no_environment
+            - running
+            - finished
+            - failed
+        result:
+          type: string
+          description: >-
+            Human-readable result description, whether deployment
+            failed/succeeded. Use together with statuses {"finished", "failed"}.
+  parameters:
+    master:
+      description: |
+        Unique identifier of the master controller. Usually unique, and set to
+        the constant `"master"`. In multi-floor projects, there might be more
+        than one master controller.
+      schema:
+        type: string
+        enum:
+          - master
+  securitySchemes:
+    x509:
+      type: X509
+      description: |
+        Use client certificates (X509) in combination with User/Password to
+        connect to the broker.
+    http:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Use Identity-Aware Proxy (IAP) in combination with (optional)
+        User/Password to connect to the broker.
+    userPassword:
+      type: userPassword
+      description: |
+        x509 or IAP must be combined with User/Password authentication to
+        connect to the broker.  The broker uses the username for
+        rights-management.
