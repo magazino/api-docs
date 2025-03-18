@@ -1,0 +1,93 @@
+asyncapi: "2.5.0"
+
+info:
+  title: Firealarm specification
+  version: "1.0.0"
+  description: |
+    Definition of the firealarm API between a fire alarm system and Magazino
+    Fleet Manager.
+
+    The fire alarm system connects to the MQTT broker and publishes periodically
+    on the state topic.  Depending on the state of the fire alarm system, either
+    the state `false` (no alarm) or `true` (in case of an alarm) is published.
+
+    The fire alarm system must publish periodically at least every 30 seconds.
+    The absence of a message (=timeout) is treated by the Magazino Fleet Manager
+    like the alarm state and starts the respective procedures.
+
+    The message should be published retained, so that the master controller
+    knows the last state of the fire alarm system after restart.
+  contact:
+    name: Markus Grimm
+    email: grimm@magazino.eu
+    url: https://www.magazino.eu
+  license:
+    name: proprietary
+
+servers:
+  production:
+    url: 'mqtts://{customer}.magazino.eu/mqtt'
+    protocol: secure-mqtt
+    description: MQTT broker
+    variables:
+      customer:
+        description: Name of the customer
+    security:
+    - x509: []
+    bindings:
+      mqtt:
+        clientId: {fireAlarmSystem}
+        cleanSession: true
+        keepAlive: 60
+        bindingVersion: 0.1.0
+
+defaultContentType: application/json
+
+channels:
+  firealarm/v2/magazino/master/state:
+    description: |
+      Topic that the firealarm system offers to provide its state.
+    parameters:
+      fireAlarmSystem:
+        $ref: "#/components/parameters/fireAlarmSystem"
+    subscribe:
+      summary: Periodically published by the fire alarm system to denote an alarm
+      description: |
+        Depending on the state of the fire alarm system, either the state
+        `false` (no alarm) or `true` (in case of an alarm) is published
+
+        The state must be published periodically at least every 30 seconds.  The
+        absence of a message (=timeout) is treated by the Magazino Fleet Manager
+        like the alarm state and starts the respective procedures.
+
+        The message should be published retained, so that the master controller
+        knows the last state of the fire alarm system after restart.
+      operationId: signalUpdate
+      message:
+        $ref: "#/components/messages/fireAlarmState"
+      bindings:
+        mqtt:
+          qos: 1
+          retain: true
+
+components:
+  messages:
+    fireAlarmState:
+      name: fireAlarmState
+      title: State of the fire alarm system
+      summary: |
+        State of the fire alarm system; `false` (no alarm) or `true` (alarm)
+      payload:
+        type: boolean
+
+  parameters:
+    fireAlarmSystem:
+      description: |
+        The name of the fire alarm system. Should default to `master` if there
+        is only one fire alarm system available.
+      schema:
+        type: string
+
+  securitySchemes:
+    x509:
+      type: X509
